@@ -6,7 +6,7 @@
 
 ## Installation
 
-1. Compile the go project using `make build` or build the docker image using `docker build .`.
+1. Compile the go project using `make build` or build the docker image using `docker build . -t qnapsmsc`.
 2. Run the project using the binary or the docker image with (for example) docker compose. 
 3. Log in to the NAS web interface
 4. Open Notification Center, then Service Account and Device Pairing.
