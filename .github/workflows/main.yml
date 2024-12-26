@@ -1,5 +1,5 @@
 ---
-name: Build qnapexporter
+name: Build qnapsmsc
 
 on:  # yamllint disable-line rule:truthy
   push:
@@ -33,6 +33,6 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: qnapexporter
-          path: bin/qnapexporter
+          name: qnapsmsc
+          path: bin/qnapsmsc
           retention-days: 30

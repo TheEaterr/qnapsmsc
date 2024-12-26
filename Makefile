@@ -1,4 +1,4 @@
-PKG = github.com/pedropombeiro/qnapexporter
+PKG = github.com/TheEaterr/qnapsmsc
 VERSION_PKG = $(PKG)/lib/utils
 PACKAGE_VERSION ?= dev
 REVISION := $(shell git rev-parse --short=8 HEAD || echo unknown)
@@ -12,7 +12,7 @@ GO_LDFLAGS ?= -X $(VERSION_PKG).REVISION=$(REVISION) -X $(VERSION_PKG).BUILT=$(B
 .PHONY: build
 build:
 	@ mkdir -p ./bin
-	go build -mod=readonly -ldflags "$(GO_LDFLAGS)" -o bin/qnapexporter .
+	go build -mod=readonly -ldflags "$(GO_LDFLAGS)" -o bin/qnapsmsc .
 
 .PHONY: test
 test:

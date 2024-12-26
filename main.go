@@ -10,54 +10,63 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/pedropombeiro/qnapexporter/lib/exporter"
-	"github.com/pedropombeiro/qnapexporter/lib/exporter/prometheus"
-	"github.com/pedropombeiro/qnapexporter/lib/notifications"
-	"github.com/pedropombeiro/qnapexporter/lib/notifications/tagextractor"
-	"github.com/pedropombeiro/qnapexporter/lib/status"
-	"github.com/pedropombeiro/qnapexporter/lib/utils"
+	"github.com/TheEaterr/qnapsmsc/lib/notifications"
+	"github.com/TheEaterr/qnapsmsc/lib/utils"
 )
 
 const (
-	metricsEndpoint      = "/metrics"
 	notificationEndpoint = "/notification"
 )
 
-var (
-	healthCheckExpiry   time.Time
-	healthCheckValidity time.Duration = time.Duration(5 * time.Minute)
-)
-
 type httpServerArgs struct {
-	exporter    exporter.Exporter
-	port        string
-	healthcheck string
-	logger      *log.Logger
+	port     string
+	logger   *log.Logger
+	username string
+	password string
 }
 
 func main() {
 	runtime.GOMAXPROCS(0)
 
 	port := flag.String("port", ":9094", "Port to serve at (e.g. :9094).")
-	pingTarget := flag.String("ping-target", "", "Host to periodically ping (e.g. 1.1.1.1).")
-	healthcheck := flag.String("healthcheck", os.Getenv("HEALTHCHECK_CONFIG"), "Healthcheck service to ping every 5 minutes (currently supported: healthchecks.io:<check-id>).")
-	grafanaURL := flag.String("grafana-url", os.Getenv("GRAFANA_URL"), "Grafana host (e.g.: https://grafana.example.com).")
-	grafanaAuthToken := flag.String("grafana-auth-token", os.Getenv("GRAFANA_AUTH_TOKEN"), "Grafana authorization token.")
-	grafanaTags := flag.String("grafana-tags", os.Getenv("GRAFANA_TAGS"), "Grafana annotation tags, separated by quotes (default: 'nas').")
+	username := flag.String("username", "admin", "Username to connect to the notification server.")
+	password := flag.String("password", "notsecure", "Password to connect to the notification server.")
 	logFile := flag.String("log", "", "Log file path (defaults to empty, i.e. STDOUT).")
+	handler := flag.String("handler", "log", "Handler to use for notifications (log or mail).")
+	mailSender := flag.String("mail-sender", "", "Email address to use as sender.")
+	mailReceiver := flag.String("mail-receiver", "", "Email address to use as receiver.")
+	smtpHost := flag.String("smtp-host", "localhost", "SMTP host to use for sending emails.")
+	smtpPort := flag.Int("smtp-port", 587, "SMTP port to use for sending emails.")
+	smtpUsername := flag.String("smtp-username", "", "SMTP username to use for sending emails.")
+	smtpPassword := flag.String("smtp-password", "", "SMTP password to use for sending emails.")
 	defaultUsage := flag.Usage
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "qnapexporter version %s (%s-%s) built on %s\n", utils.VERSION, utils.REVISION, utils.BRANCH, utils.BUILT)
+		fmt.Fprintf(flag.CommandLine.Output(), "qnapsmsc version %s (%s-%s) built on %s\n", utils.VERSION, utils.REVISION, utils.BRANCH, utils.BUILT)
 		fmt.Fprintln(flag.CommandLine.Output(), "")
 		defaultUsage()
 	}
 	flag.Parse()
 
-	healthCheckExpiry = time.Now()
+	log.Println("Using options:")
+	log.Printf("  - Port: %s\n", *port)
+	log.Printf("  - Username: %s\n", *username)
+	log.Printf("  - Log file: %s\n", *logFile)
+	log.Printf("  - Handler: %s\n", *handler)
+	log.Printf("  - Mail sender: %s\n", *mailSender)
+	log.Printf("  - Mail receiver: %s\n", *mailReceiver)
+	log.Printf("  - SMTP host: %s\n", *smtpHost)
+	log.Printf("  - SMTP port: %d\n", *smtpPort)
+	log.Printf("  - SMTP username: %s\n", *smtpUsername)
+
+	if *handler != "log" && *handler != "mail" {
+		log.Fatalf("Invalid handler: %s\n", *handler)
+	}
+	if *handler == "mail" && (*mailSender == "" || *mailReceiver == "") {
+		log.Fatalf("Mail handler requires both sender and receiver to be set\n")
+	}
 
 	var logWriter io.Writer = os.Stderr
 	if *logFile != "" {
@@ -71,47 +80,24 @@ func main() {
 	}
 	logger := log.New(logWriter, "", log.LstdFlags)
 
-	serverStatus := &status.Status{
-		MetricsEndpoint: metricsEndpoint,
-		ExporterStatus: exporter.Status{
-			Branch:   utils.BRANCH,
-			Revision: utils.REVISION,
-			Built:    utils.BUILT,
-			Version:  utils.VERSION,
-		},
-	}
-	if *grafanaURL != "" {
-		serverStatus.NotificationEndpoint = notificationEndpoint
-	}
-
-	config := prometheus.ExporterConfig{
-		PingTarget: *pingTarget,
-		Logger:     logger,
-	}
-	e := prometheus.NewExporter(config, &serverStatus.ExporterStatus)
-
 	args := httpServerArgs{
-		exporter:    e,
-		port:        *port,
-		healthcheck: *healthcheck,
-		logger:      logger,
+		port:     *port,
+		logger:   logger,
+		username: *username,
+		password: *password,
 	}
-	notifCenterAnnotator := notifications.NewRegionMatchingAnnotator(
-		*grafanaURL,
-		*grafanaAuthToken,
-		append(strings.Split(*grafanaTags, ","), "notification-center"),
-		tagextractor.NewNotificationCenterTagExtractor(),
-		notifications.NewRegionMatcher(20),
-		&http.Client{Timeout: 5 * time.Second},
-		logger,
-	)
-	dockerAnnotator := notifications.NewSimpleAnnotator(
-		*grafanaURL,
-		*grafanaAuthToken,
-		append(strings.Split(*grafanaTags, ","), "docker"),
-		&http.Client{Timeout: 5 * time.Second},
-		logger,
-	)
+	notifHandler := notifications.NewLogHandler(logger)
+	if *handler == "mail" {
+		notifHandler = notifications.NewMailHandler(
+			logger,
+			*mailSender,
+			*mailReceiver,
+			*smtpHost,
+			*smtpPort,
+			*smtpUsername,
+			*smtpPassword,
+		)
+	}
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 
@@ -125,67 +111,47 @@ func main() {
 		<-exitCh
 	}()
 
-	go func() { _ = handleDockerEvents(ctx, args, dockerAnnotator, &serverStatus.ExporterStatus) }()
-
-	err := serveHTTP(ctx, args, notifCenterAnnotator, serverStatus)
+	err := serveHTTP(ctx, args, notifHandler)
 	if err != nil {
 		log.Println(err.Error())
 	}
 	os.Exit(1)
 }
 
-func handleMetricsHTTPRequest(w http.ResponseWriter, r *http.Request, args httpServerArgs) {
-	w.Header().Add("Content-Type", "text/plain")
-
-	handleHealthcheckStart(args.healthcheck)
-
-	err := args.exporter.WriteMetrics(w)
-	if err != nil {
-		args.logger.Println(err.Error())
-		w.WriteHeader(http.StatusInternalServerError)
-	}
-
-	handleHealthcheckEnd(args.healthcheck, err)
-}
-
-func handleNotificationHTTPRequest(w http.ResponseWriter, r *http.Request, annotator notifications.Annotator) {
-	notification := r.URL.Query().Get("text")
-	if len(notification) == 0 {
+func handleNotificationHTTPRequest(args httpServerArgs, w http.ResponseWriter, r *http.Request, annotator notifications.Handler) {
+	log.Printf("Received notification request from %s\n", r.RemoteAddr)
+	username := r.URL.Query().Get("username")
+	if len(username) == 0 {
 		w.WriteHeader(http.StatusBadRequest)
+		log.Println("Returning 400 Bad Request, missing username")
+		return
+	}
+	password := r.URL.Query().Get("password")
+	if len(password) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		log.Println("Returning 400 Bad Request, missing password")
+		return
+	}
+	if username != args.username || password != args.password {
+		w.WriteHeader(http.StatusUnauthorized)
+		log.Println("Returning 401 Unauthorized")
 		return
 	}
 
-	_, _ = annotator.Post(notification, time.Now())
+	notification := r.URL.Query().Get("text")
+	if len(notification) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		log.Println("Returning 400 Bad Request, missing text")
+		return
+	}
+
+	_, _ = annotator.Post(notification)
 }
 
-func handleRootHTTPRequest(w http.ResponseWriter, r *http.Request, serverStatus *status.Status, logger *log.Logger) {
-	w.Header().Add("Content-Type", "text/html")
-	w.Header().Add("Cache-Control", "no-cache")
-
-	err := serverStatus.WriteHTML(w)
-	if err != nil {
-		logger.Println(err.Error())
-
-		w.WriteHeader(http.StatusInternalServerError)
-	}
-}
-
-func serveHTTP(ctx context.Context, args httpServerArgs, annotator notifications.Annotator, serverStatus *status.Status) error {
-	defer args.exporter.Close()
-
-	// handle route using handler function
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		handleRootHTTPRequest(w, r, serverStatus, args.logger)
+func serveHTTP(ctx context.Context, args httpServerArgs, handler notifications.Handler) error {
+	http.HandleFunc(notificationEndpoint, func(w http.ResponseWriter, r *http.Request) {
+		handleNotificationHTTPRequest(args, w, r, handler)
 	})
-	http.HandleFunc(metricsEndpoint, func(w http.ResponseWriter, r *http.Request) {
-		handleMetricsHTTPRequest(w, r, args)
-	})
-	if serverStatus.NotificationEndpoint != "" {
-		http.HandleFunc(notificationEndpoint, func(w http.ResponseWriter, r *http.Request) {
-			serverStatus.LastNotification = time.Now()
-			handleNotificationHTTPRequest(w, r, annotator)
-		})
-	}
 
 	// listen to port
 	server := http.Server{Addr: args.port}
@@ -206,55 +172,4 @@ func serveHTTP(ctx context.Context, args httpServerArgs, annotator notifications
 	}()
 
 	return server.ListenAndServe()
-}
-
-func handleHealthcheckStart(healthcheck string) {
-	handleHealthcheck(healthcheck, true, nil)
-}
-
-func handleHealthcheckEnd(healthcheck string, err error) {
-	handleHealthcheck(healthcheck, false, err)
-}
-
-func handleHealthcheck(healthcheck string, start bool, err error) {
-	if healthcheck == "" {
-		return
-	}
-
-	if !time.Now().After(healthCheckExpiry) {
-		return
-	}
-
-	parts := strings.SplitN(healthcheck, ":", 2)
-	if len(parts) < 2 {
-		log.Printf("Configuration error in healthcheck: %s\n", healthcheck)
-		return
-	}
-
-	switch parts[0] {
-	case "healthchecks.io":
-		client := http.Client{Timeout: 5 * time.Second}
-		endpoint := ""
-		switch {
-		case start:
-			endpoint = "start"
-		case err != nil:
-			endpoint = "fail"
-		}
-
-		url := fmt.Sprintf("https://hc-ping.com/%s", parts[1])
-		if endpoint != "" {
-			url += "/" + endpoint
-		}
-		if err != nil {
-			_, err = client.Post(url, "text/plain", strings.NewReader(err.Error()))
-		} else {
-			_, err = client.Head(url)
-		}
-		log.Printf("Sent %s healthcheck ping to %s: %v\n", endpoint, url, err)
-	}
-
-	if !start {
-		healthCheckExpiry = healthCheckExpiry.Add(healthCheckValidity)
-	}
 }
